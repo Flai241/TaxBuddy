@@ -9,7 +9,7 @@ import sys
 import time
 time.sleep(3)
 
-BOT_TOKEN = "8969477388:AAEhJtwkM3_wu8kL-JWse3bxYg6DPR-8_iE"
+BOT_TOKEN = "8969477388:AAE6YjjHrPxY08TDfwOUOUIg2jLoL9ClO8I"
 GEMINI_KEY = os.environ.get("GEMINI_KEY")
 
 genai.configure(api_key=GEMINI_KEY)
