@@ -1,10 +1,10 @@
 import sqlite3
 from datetime import datetime
+import os
 import google.generativeai as genai
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import json
-import os
 
 BOT_TOKEN = "8969477388:AAEhJtwkM3_wu8kL-JWse3bxYg6DPR-8_iE"
 GEMINI_KEY = os.environ.get("GEMINI_KEY")
