@@ -5,6 +5,9 @@ import google.generativeai as genai
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import json
+import sys
+import time
+time.sleep(3)
 
 BOT_TOKEN = "8969477388:AAEhJtwkM3_wu8kL-JWse3bxYg6DPR-8_iE"
 GEMINI_KEY = os.environ.get("GEMINI_KEY")
@@ -133,6 +136,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     print("Бот запущен!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
+
 
 if __name__ == "__main__":
     main()
