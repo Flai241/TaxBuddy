@@ -1,20 +1,14 @@
 import sqlite3
 from datetime import datetime
 import os
-import google.generativeai as genai
+from openai import OpenAI
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import json
-import sys
-import time
-time.sleep(3)
-
 
 BOT_TOKEN = "8381828847:AAEUCTQkv5QHWdYvHAS34OMlTycwmlVGuBg"
-GEMINI_KEY = os.environ.get("GEMINI_KEY")
-
-genai.configure(api_key=GEMINI_KEY)
-model = genai.GenerativeModel("gemini-2.5-flash")
+DEEPSEEK_KEY = os.environ.get("DEEPSEEK_KEY")
+client = OpenAI(api_key=DEEPSEEK_KEY, base_url="https://api.deepseek.com")
 
 def init_db():
     conn = sqlite3.connect("taxbuddy.db")
@@ -62,8 +56,12 @@ def parse_message(text):
 Категории: Работа, Подписки, Транспорт, Еда, Офис, Маркетинг, Прочее.
 Если сумма не указана, поставь 0. Если не понятно доход или расход — ставь "expense"."""
     
-    response = model.generate_content(prompt)
-    return response.text
+    response = client.chat.completions.create(
+        model="deepseek-chat",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0
+    )
+    return response.choices[0].message.content
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
