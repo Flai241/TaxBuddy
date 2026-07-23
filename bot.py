@@ -9,6 +9,7 @@ import sys
 import time
 time.sleep(3)
 
+
 BOT_TOKEN = "8381828847:AAEUCTQkv5QHWdYvHAS34OMlTycwmlVGuBg"
 GEMINI_KEY = os.environ.get("GEMINI_KEY")
 
