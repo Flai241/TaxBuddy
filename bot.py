@@ -1,14 +1,9 @@
 import sqlite3
 from datetime import datetime
-import os
-from openai import OpenAI
-from telegram import Update
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-import json
 
 BOT_TOKEN = "8381828847:AAEUCTQkv5QHWdYvHAS34OMlTycwmlVGuBg"
-DEEPSEEK_KEY = os.environ.get("DEEPSEEK_KEY")
-client = OpenAI(api_key=DEEPSEEK_KEY, base_url="https://api.deepseek.com")
 
 def init_db():
     conn = sqlite3.connect("taxbuddy.db")
@@ -49,38 +44,29 @@ def get_balance(user_id):
     tax = round(tax_base * 0.06, 2) if tax_base > 0 else 0
     return income, expense, tax_base, tax
 
-def parse_message(text):
-    prompt = f"""Ты — бухгалтерский ассистент. Проанализируй сообщение и верни ТОЛЬКО JSON без пояснений.
-Сообщение: "{text}"
-Формат: {{"type": "income" или "expense", "amount": число, "description": "краткое описание", "category": "категория"}}
-Категории: Работа, Подписки, Транспорт, Еда, Офис, Маркетинг, Прочее.
-Если сумма не указана, поставь 0. Если не понятно доход или расход — ставь "expense"."""
-    
-    response = client.chat.completions.create(
-        model="deepseek-chat",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0
-    )
-    return response.choices[0].message.content
+main_keyboard = ReplyKeyboardMarkup([
+    [KeyboardButton("➕ Доход"), KeyboardButton("➖ Расход")],
+    [KeyboardButton("📊 Баланс"), KeyboardButton("🧾 О налогах")],
+    [KeyboardButton("ℹ️ Помощь")]
+], resize_keyboard=True)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Привет! Я TaxBuddy — твой налоговый помощник.\n\n"
-        "Напиши мне о доходах или расходах, например:\n"
-        "«Заработал 5000 рублей за логотип»\n"
-        "«Купил подписку за 599 рублей»\n\n"
-        "Команды:\n"
-        "/balance — узнать баланс и налог\n"
-        "/help — помощь"
+        "Нажми «➕ Доход» или «➖ Расход», чтобы записать операцию.\n"
+        "Или просто напиши сумму!",
+        reply_markup=main_keyboard
     )
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Просто пиши мне в свободной форме:\n"
-        "• «Получил 10 000 от клиента»\n"
-        "• «Оплатил интернет 500 руб»\n"
-        "• «Обед с заказчиком 1200»\n\n"
-        "/balance — посчитать налог 6%"
+        "📘 Как пользоваться:\n\n"
+        "• Нажми «➕ Доход» и введи сумму\n"
+        "• Нажми «➖ Расход» и введи сумму\n"
+        "• «📊 Баланс» — посчитать налог\n"
+        "• «🧾 О налогах» — узнать про налоги\n\n"
+        "Скоро я научусь понимать твои сообщения и чеки!",
+        reply_markup=main_keyboard
     )
 
 async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -92,39 +78,71 @@ async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"💸 Расходы: {expense} ₽\n"
         f"📌 Налоговая база: {tax_base} ₽\n"
         f"🧾 Налог к уплате (6%): {tax} ₽\n\n"
-        f"✅ Безопасно можно тратить: {income - expense - tax} ₽"
+        f"✅ Можно тратить: {income - expense - tax} ₽",
+        reply_markup=main_keyboard
+    )
+
+async def tax_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🧾 О налогах для самозанятых:\n\n"
+        "• 4% — с доходов от физлиц\n"
+        "• 6% — с доходов от юрлиц и ИП\n"
+        "• Нет обязательных взносов\n"
+        "• Лимит дохода: 2,4 млн ₽/год\n\n"
+        "Оплата до 25 числа следующего месяца.\n"
+        "Я считаю по ставке 6%.",
+        reply_markup=main_keyboard
     )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text
     
-    try:
-        result = parse_message(text)
-        result = result.replace("```json", "").replace("```", "").strip()
-        
-        data = json.loads(result)
-        
-        trans_type = data.get("type", "expense")
-        amount = float(data.get("amount", 0))
-        description = data.get("description", text)
-        category = data.get("category", "Прочее")
-        
-        if amount == 0:
-            await update.message.reply_text("🤔 Не понял сумму. Напиши, сколько денег, например: «Заработал 5000 рублей»")
-            return
-        
-        add_transaction(user_id, trans_type, amount, description, category)
-        
-        emoji = "➕" if trans_type == "income" else "➖"
+    if text == "➕ Доход":
+        context.user_data["mode"] = "income"
+        await update.message.reply_text("Введи сумму дохода (только число):")
+        return
+    
+    if text == "➖ Расход":
+        context.user_data["mode"] = "expense"
+        await update.message.reply_text("Введи сумму расхода (только число):")
+        return
+    
+    if text == "📊 Баланс":
+        await balance(update, context)
+        return
+    
+    if text == "🧾 О налогах":
+        await tax_info(update, context)
+        return
+    
+    if text == "ℹ️ Помощь":
+        await help_cmd(update, context)
+        return
+    
+    mode = context.user_data.get("mode")
+    if mode:
+        try:
+            amount = float(text.replace(",", ".").replace(" ", ""))
+            if amount <= 0:
+                await update.message.reply_text("Сумма должна быть больше нуля!")
+                return
+            
+            if mode == "income":
+                add_transaction(user_id, "income", amount, "Доход", "Работа")
+                await update.message.reply_text(f"✅ Записал доход: {amount} ₽", reply_markup=main_keyboard)
+            else:
+                add_transaction(user_id, "expense", amount, "Расход", "Прочее")
+                await update.message.reply_text(f"✅ Записал расход: {amount} ₽", reply_markup=main_keyboard)
+            
+            context.user_data["mode"] = None
+        except ValueError:
+            await update.message.reply_text("Введи только число! Например: 5000")
+    else:
         await update.message.reply_text(
-            f"{emoji} Записал: {description}\n"
-            f"Сумма: {amount} ₽\n"
-            f"Категория: {category}\n\n"
-            f"Напиши /balance чтобы узнать налог"
+            "Используй кнопки «➕ Доход» или «➖ Расход»!",
+            reply_markup=main_keyboard
         )
-    except Exception as e:
-        await update.message.reply_text("😵 Что-то пошло не так. Попробуй написать иначе, например: «Заработал 5000 рублей за дизайн»")
 
 def main():
     init_db()
@@ -135,7 +153,6 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     print("Бот запущен!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
-
 
 if __name__ == "__main__":
     main()
