@@ -3,10 +3,11 @@ from datetime import datetime
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-BOT_TOKEN = "8381828847:AAFaWP-IXVvdVJSpEac1hciXRWOAidHTHT0"
+BOT_TOKEN = "твой_токен_сюда"
 
 MAX_AMOUNT = 10_000_000
 SELF_EMPLOYED_LIMIT = 2_400_000
+SERVER_TZ = "UTC-7"
 
 def init_db():
     conn = sqlite3.connect("taxbuddy.db")
@@ -25,7 +26,25 @@ def init_db():
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
-            tax_rate REAL DEFAULT 6.0
+            tax_rate REAL DEFAULT 6.0,
+            goal REAL DEFAULT 0
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS reviews (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            rating INTEGER,
+            text TEXT,
+            date TEXT
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS promos (
+            code TEXT PRIMARY KEY,
+            description TEXT DEFAULT '',
+            max_uses INTEGER DEFAULT 1,
+            used INTEGER DEFAULT 0
         )
     """)
     conn.commit()
@@ -54,6 +73,21 @@ def set_tax_rate(user_id, rate):
     conn.commit()
     conn.close()
 
+def get_goal(user_id):
+    conn = sqlite3.connect("taxbuddy.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT goal FROM users WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return row[0] if row else 0
+
+def set_goal(user_id, goal):
+    conn = sqlite3.connect("taxbuddy.db")
+    cursor = conn.cursor()
+    cursor.execute("INSERT OR REPLACE INTO users (user_id, tax_rate, goal) VALUES (?, (SELECT tax_rate FROM users WHERE user_id = ?), ?)", (user_id, user_id, goal))
+    conn.commit()
+    conn.close()
+
 def add_transaction(user_id, trans_type, amount, description, category):
     conn = sqlite3.connect("taxbuddy.db")
     cursor = conn.cursor()
@@ -79,6 +113,39 @@ def delete_last_transaction(user_id):
     conn.close()
     return None
 
+def add_review(user_id, rating, text):
+    conn = sqlite3.connect("taxbuddy.db")
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO reviews (user_id, rating, text, date) VALUES (?, ?, ?, ?)",
+                   (user_id, rating, text, datetime.now().strftime("%Y-%m-%d %H:%M")))
+    conn.commit()
+    conn.close()
+
+def get_reviews(limit=5):
+    conn = sqlite3.connect("taxbuddy.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT rating, text, date FROM reviews ORDER BY id DESC LIMIT ?", (limit,))
+    rows = cursor.fetchall()
+    cursor.execute("SELECT AVG(rating), COUNT(*) FROM reviews")
+    avg, count = cursor.fetchone()
+    conn.close()
+    return rows, round(avg, 1) if avg else 0, count
+
+def check_promo(code):
+    conn = sqlite3.connect("taxbuddy.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT max_uses, used FROM promos WHERE code = ?", (code,))
+    row = cursor.fetchone()
+    if row:
+        max_uses, used = row
+        if used < max_uses:
+            cursor.execute("UPDATE promos SET used = used + 1 WHERE code = ?", (code,))
+            conn.commit()
+            conn.close()
+            return True
+    conn.close()
+    return False
+
 def get_balance(user_id):
     conn = sqlite3.connect("taxbuddy.db")
     cursor = conn.cursor()
@@ -97,6 +164,15 @@ def get_year_income(user_id):
     conn = sqlite3.connect("taxbuddy.db")
     cursor = conn.cursor()
     cursor.execute("SELECT SUM(amount) FROM transactions WHERE user_id = ? AND type = 'income' AND date >= ?", (user_id, year_start))
+    row = cursor.fetchone()
+    conn.close()
+    return row[0] if row[0] else 0
+
+def get_month_income(user_id):
+    month_start = f"{datetime.now().strftime('%Y-%m')}-01"
+    conn = sqlite3.connect("taxbuddy.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT SUM(amount) FROM transactions WHERE user_id = ? AND type = 'income' AND date >= ?", (user_id, month_start))
     row = cursor.fetchone()
     conn.close()
     return row[0] if row[0] else 0
@@ -186,14 +262,18 @@ def export_report(user_id):
     
     report = "📄 ОТЧЁТ TAXBUDDY\n"
     report += f"Дата: {datetime.now().strftime('%d.%m.%Y %H:%M')}\n"
-    report += f"Ставка налога: {tax_rate}%\n\n"
+    report += f"Ставка налога: {tax_rate}%\n"
+    report += f"🕐 Время сервера ({SERVER_TZ})\n\n"
     report += f"💰 Всего доходов: {format_amount(income)} ₽\n"
     report += f"💸 Всего расходов: {format_amount(expense)} ₽\n"
     report += f"🧾 Налог к уплате: {format_amount(tax)} ₽\n"
     report += f"✅ Чистый остаток: {format_amount(net)} ₽\n"
     
     if limit_left is not None:
-        report += f"\n📊 До лимита (2,4 млн): {format_amount(limit_left)} ₽\n"
+        if limit_left >= 0:
+            report += f"\n📊 До лимита (2,4 млн): {format_amount(limit_left)} ₽\n"
+        else:
+            report += f"\n⚠️ Лимит превышен на {format_amount(abs(limit_left))} ₽!\n"
     
     report += "\n━━━━━━━━━━━━━━━━\n📋 ПОСЛЕДНИЕ ОПЕРАЦИИ:\n\n"
     
@@ -207,9 +287,14 @@ def export_report(user_id):
 main_keyboard = ReplyKeyboardMarkup([
     [KeyboardButton("➕ Доход"), KeyboardButton("➖ Расход")],
     [KeyboardButton("📊 Баланс"), KeyboardButton("📊 Статистика")],
-    [KeyboardButton("🧾 О налогах"), KeyboardButton("ℹ️ Помощь")],
-    [KeyboardButton("⚙️ Ставка налога"), KeyboardButton("📥 Экспорт")],
-    [KeyboardButton("↩️ Отменить"), KeyboardButton("🔄 Сброс")]
+    [KeyboardButton("📥 Экспорт"), KeyboardButton("🔔 Ещё")]
+], resize_keyboard=True)
+
+more_keyboard = ReplyKeyboardMarkup([
+    [KeyboardButton("🎯 Цель"), KeyboardButton("⚙️ Ставка налога")],
+    [KeyboardButton("🧾 О налогах"), KeyboardButton("⭐ Отзывы")],
+    [KeyboardButton("🎟️ Промокод"), KeyboardButton("↩️ Отменить")],
+    [KeyboardButton("🔄 Сброс"), KeyboardButton("❌ Назад")]
 ], resize_keyboard=True)
 
 category_keyboard = ReplyKeyboardMarkup([
@@ -230,6 +315,12 @@ tax_rate_keyboard = ReplyKeyboardMarkup([
     [KeyboardButton("❌ Отмена")]
 ], resize_keyboard=True)
 
+review_rate_keyboard = ReplyKeyboardMarkup([
+    [KeyboardButton("⭐1"), KeyboardButton("⭐2"), KeyboardButton("⭐3")],
+    [KeyboardButton("⭐4"), KeyboardButton("⭐5")],
+    [KeyboardButton("❌ Отмена")]
+], resize_keyboard=True)
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Привет! Я TaxBuddy — твой налоговый помощник.\n\n"
@@ -245,10 +336,8 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Нажми «➖ Расход», введи сумму и выбери категорию\n"
         "• «📊 Баланс» — посчитать налог\n"
         "• «📊 Статистика» — графики и анализ\n"
-        "• «⚙️ Ставка налога» — выбрать 4%, 6% или 13%\n"
         "• «📥 Экспорт» — скачать отчёт\n"
-        "• «↩️ Отменить» — отменить последнюю операцию\n"
-        "• «🔄 Сброс» — удалить все данные\n\n"
+        "• «🔔 Ещё» — дополнительные функции\n\n"
         "Скоро я научусь понимать твои сообщения и чеки!",
         reply_markup=main_keyboard
     )
@@ -257,6 +346,8 @@ async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     income, expense, tax, net, tax_rate = get_balance(user_id)
     year_income = get_year_income(user_id)
+    month_income = get_month_income(user_id)
+    goal = get_goal(user_id)
     
     warning = ""
     if net < 0:
@@ -266,9 +357,17 @@ async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if tax_rate in [4.0, 6.0]:
         limit_left = SELF_EMPLOYED_LIMIT - year_income
         percent = round((year_income / SELF_EMPLOYED_LIMIT) * 100, 1)
-        limit_info = f"\n\n📊 Лимит самозанятого:\nИспользовано: {format_amount(year_income)} ₽ ({percent}%)\nОсталось: {format_amount(limit_left)} ₽"
-        if limit_left < 0:
-            limit_info += "\n⚠️ Лимит превышен!"
+        if limit_left >= 0:
+            limit_info = f"\n\n📊 Лимит самозанятого:\nИспользовано: {format_amount(year_income)} ₽ ({percent}%)\nОсталось: {format_amount(limit_left)} ₽"
+        else:
+            limit_info = f"\n\n📊 Лимит самозанятого:\nИспользовано: {format_amount(year_income)} ₽ ({percent}%)\n⚠️ Лимит превышен на {format_amount(abs(limit_left))} ₽!"
+    
+    goal_info = ""
+    if goal > 0:
+        percent = round((month_income / goal) * 100, 1) if goal > 0 else 0
+        left = goal - month_income
+        bar = "█" * min(int(percent / 10), 10) + "░" * max(10 - int(percent / 10), 0)
+        goal_info = f"\n\n🎯 Цель на месяц: {format_amount(goal)} ₽\nПрогресс: [{bar}] {percent}%\nОсталось: {format_amount(left)} ₽" if left > 0 else f"\n\n🎯 Цель на месяц: {format_amount(goal)} ₽\nПрогресс: [{bar}] {percent}%\n✅ Цель достигнута!"
     
     await update.message.reply_text(
         f"📊 Твой баланс:\n\n"
@@ -277,6 +376,7 @@ async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🧾 Налог к уплате ({tax_rate}%): {format_amount(tax)} ₽\n\n"
         f"✅ Чистый остаток: {format_amount(net)} ₽"
         f"{limit_info}"
+        f"{goal_info}"
         f"{warning}",
         reply_markup=main_keyboard
     )
@@ -300,7 +400,8 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     avg_income = total_income / months_count if months_count > 0 else total_income
     
     await update.message.reply_text(
-        f"📊 Статистика:\n\n"
+        f"📊 Статистика:\n"
+        f"🕐 Время сервера ({SERVER_TZ})\n\n"
         f"📈 Доходы по месяцам:\n{income_chart}\n\n"
         f"💰 Доходы по категориям:\n{income_cat_chart}\n\n"
         f"📂 Расходы по категориям:\n{expense_chart}\n\n"
@@ -312,6 +413,16 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def tax_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    now = datetime.now()
+    if now.day <= 25:
+        deadline_month = now.month - 1 if now.month > 1 else 12
+        deadline_date = f"25.{now.month:02d}.{now.year}"
+        tax_for = f"{deadline_month:02d}.{now.year}"
+    else:
+        deadline_month = now.month
+        deadline_date = f"25.{now.month + 1:02d}.{now.year}" if now.month < 12 else f"25.01.{now.year + 1}"
+        tax_for = f"{now.month:02d}.{now.year}"
+    
     await update.message.reply_text(
         "🧾 О налогах:\n\n"
         "• 4% — с доходов от физлиц (самозанятый)\n"
@@ -321,15 +432,14 @@ async def tax_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Нет обязательных взносов\n"
         "• Лимит дохода: 2,4 млн ₽/год\n"
         "• Оплата до 25 числа следующего месяца\n\n"
+        f"📅 Ближайший дедлайн: {deadline_date}\n"
+        f"📌 Налог за {tax_for}\n\n"
         "Выбери свою ставку в «⚙️ Ставка налога».",
         reply_markup=main_keyboard
     )
 
 async def set_tax_rate_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Выбери налоговую ставку:",
-        reply_markup=tax_rate_keyboard
-    )
+    await update.message.reply_text("Выбери налоговую ставку:", reply_markup=tax_rate_keyboard)
 
 async def reset_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["reset_pending"] = True
@@ -342,9 +452,48 @@ async def reset_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ], resize_keyboard=True)
     )
 
+async def feedback_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["feedback_pending"] = True
+    await update.message.reply_text("⭐ Поставь оценку боту (1-5):", reply_markup=review_rate_keyboard)
+
+async def reviews_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    reviews, avg, count = get_reviews()
+    if count == 0:
+        await update.message.reply_text("⭐ Пока нет отзывов. Будь первым — напиши /feedback!", reply_markup=main_keyboard)
+        return
+    
+    text = f"⭐ Средняя оценка: {avg}/5 (всего {count})\n\n"
+    for rating, review_text, date in reviews:
+        stars = "⭐" * rating
+        text += f"{stars}\n{review_text}\n📅 {date}\n\n"
+    
+    await update.message.reply_text(text, reply_markup=main_keyboard)
+
+async def goal_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["goal_pending"] = True
+    await update.message.reply_text("🎯 Введи цель по доходу на месяц (только число):", reply_markup=cancel_keyboard)
+
+async def promo_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["promo_pending"] = True
+    await update.message.reply_text("🎟️ Введи промокод:", reply_markup=cancel_keyboard)
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text
+    
+    if text == "🔔 Ещё":
+        await update.message.reply_text("Дополнительные функции:", reply_markup=more_keyboard)
+        return
+    
+    if text == "❌ Назад":
+        context.user_data.pop("mode", None)
+        context.user_data.pop("reset_pending", None)
+        context.user_data.pop("pending_amount", None)
+        context.user_data.pop("feedback_pending", None)
+        context.user_data.pop("goal_pending", None)
+        context.user_data.pop("promo_pending", None)
+        await update.message.reply_text("Главное меню.", reply_markup=main_keyboard)
+        return
     
     if text == "➕ Доход":
         context.user_data["mode"] = "income"
@@ -389,6 +538,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await set_tax_rate_cmd(update, context)
         return
     
+    if text == "⭐ Отзывы":
+        await feedback_start(update, context)
+        return
+    
+    if text == "🎯 Цель":
+        await goal_set(update, context)
+        return
+    
+    if text == "🎟️ Промокод":
+        await promo_cmd(update, context)
+        return
+    
     if text == "4% (самозанятый, физлица)":
         set_tax_rate(user_id, 4.0)
         await update.message.reply_text("✅ Ставка налога изменена на 4%", reply_markup=main_keyboard)
@@ -417,6 +578,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop("mode", None)
         context.user_data.pop("reset_pending", None)
         context.user_data.pop("pending_amount", None)
+        context.user_data.pop("feedback_pending", None)
+        context.user_data.pop("goal_pending", None)
+        context.user_data.pop("promo_pending", None)
         await update.message.reply_text("❌ Отменено.", reply_markup=main_keyboard)
         return
     
@@ -448,6 +612,42 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data.pop("pending_amount", None)
         else:
             await update.message.reply_text("Сначала введи сумму расхода!", reply_markup=main_keyboard)
+        return
+    
+    if text in ["⭐1", "⭐2", "⭐3", "⭐4", "⭐5"]:
+        if context.user_data.get("feedback_pending"):
+            rating = int(text[1])
+            context.user_data["feedback_rating"] = rating
+            context.user_data["feedback_pending"] = False
+            await update.message.reply_text(f"Поставил {rating} ⭐. Теперь напиши отзыв (или ❌ Отмена):", reply_markup=cancel_keyboard)
+            return
+    
+    if "feedback_rating" in context.user_data:
+        rating = context.user_data.pop("feedback_rating")
+        add_review(user_id, rating, text)
+        await update.message.reply_text(f"⭐ Спасибо за отзыв! Ты поставил {rating}/5.", reply_markup=main_keyboard)
+        return
+    
+    if context.user_data.get("goal_pending"):
+        try:
+            goal = float(text.replace(",", ".").replace(" ", ""))
+            if goal <= 0:
+                await update.message.reply_text("Сумма должна быть больше нуля!")
+                return
+            set_goal(user_id, goal)
+            context.user_data["goal_pending"] = False
+            await update.message.reply_text(f"🎯 Цель на месяц: {format_amount(goal)} ₽. Удачи!", reply_markup=main_keyboard)
+        except ValueError:
+            await update.message.reply_text("Введи только число! Например: 100000")
+        return
+    
+    if context.user_data.get("promo_pending"):
+        code = text.strip().upper()
+        if check_promo(code):
+            await update.message.reply_text("🎟️ Промокод активирован! Premium-доступ получен.", reply_markup=main_keyboard)
+        else:
+            await update.message.reply_text("❌ Промокод недействителен или уже использован.", reply_markup=main_keyboard)
+        context.user_data["promo_pending"] = False
         return
     
     mode = context.user_data.get("mode")
@@ -490,6 +690,10 @@ def main():
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("balance", balance))
     app.add_handler(CommandHandler("stats", stats))
+    app.add_handler(CommandHandler("feedback", feedback_start))
+    app.add_handler(CommandHandler("reviews", reviews_cmd))
+    app.add_handler(CommandHandler("promo", promo_cmd))
+    app.add_handler(CommandHandler("goal", goal_set))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     print("Бот запущен!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
