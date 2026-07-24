@@ -3,7 +3,7 @@ from datetime import datetime
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-BOT_TOKEN = "8381828847:AAFaWP-IXVvdVJSpEac1hciXRWOAidHTHT0"
+BOT_TOKEN = "твой_токен_сюда"
 
 MAX_AMOUNT = 10_000_000
 SELF_EMPLOYED_LIMIT = 2_400_000
@@ -537,9 +537,9 @@ async def show_filtered_reviews(update: Update, context: ContextTypes.DEFAULT_TY
     text = f"Отзывы ({filter_text}):\n\n"
     
     for row in reviews:
-        rating = row[0]
-        review_text = row[1]
-        date_str = f"\n📅 {row[2]}" if len(row) > 2 else ""
+        rating = row[0] if row[0] is not None else 0
+        review_text = row[1] if row[1] is not None else ""
+        date_str = f"\n📅 {row[2]}" if len(row) > 2 and row[2] is not None else ""
         stars = "⭐" * rating
         text += f"{stars}\n{review_text}{date_str}\n\n"
     
@@ -810,3 +810,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
