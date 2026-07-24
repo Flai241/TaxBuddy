@@ -1,8 +1,7 @@
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-import os
 
 BOT_TOKEN = "8381828847:AAFaWP-IXVvdVJSpEac1hciXRWOAidHTHT0"
 
@@ -63,7 +62,22 @@ def add_transaction(user_id, trans_type, amount, description, category):
         (user_id, trans_type, amount, description, category, datetime.now().strftime("%Y-%m-%d %H:%M"))
     )
     conn.commit()
+    last_id = cursor.lastrowid
     conn.close()
+    return last_id
+
+def delete_last_transaction(user_id):
+    conn = sqlite3.connect("taxbuddy.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, type, amount, description, category FROM transactions WHERE user_id = ? ORDER BY id DESC LIMIT 1", (user_id,))
+    row = cursor.fetchone()
+    if row:
+        cursor.execute("DELETE FROM transactions WHERE id = ?", (row[0],))
+        conn.commit()
+        conn.close()
+        return row[1], row[2], row[3], row[4]
+    conn.close()
+    return None
 
 def get_balance(user_id):
     conn = sqlite3.connect("taxbuddy.db")
@@ -181,8 +195,7 @@ def export_report(user_id):
     if limit_left is not None:
         report += f"\n📊 До лимита (2,4 млн): {format_amount(limit_left)} ₽\n"
     
-    report += "\n━━━━━━━━━━━━━━━━\n"
-    report += "📋 ПОСЛЕДНИЕ ОПЕРАЦИИ:\n\n"
+    report += "\n━━━━━━━━━━━━━━━━\n📋 ПОСЛЕДНИЕ ОПЕРАЦИИ:\n\n"
     
     for row in rows:
         trans_type, amount, description, category, date = row
@@ -196,13 +209,18 @@ main_keyboard = ReplyKeyboardMarkup([
     [KeyboardButton("📊 Баланс"), KeyboardButton("📊 Статистика")],
     [KeyboardButton("🧾 О налогах"), KeyboardButton("ℹ️ Помощь")],
     [KeyboardButton("⚙️ Ставка налога"), KeyboardButton("📥 Экспорт")],
-    [KeyboardButton("🔄 Сброс")]
+    [KeyboardButton("↩️ Отменить"), KeyboardButton("🔄 Сброс")]
 ], resize_keyboard=True)
 
 category_keyboard = ReplyKeyboardMarkup([
     [KeyboardButton("🚕 Такси"), KeyboardButton("📱 Подписки")],
     [KeyboardButton("🍔 Еда"), KeyboardButton("💼 Офис")],
-    [KeyboardButton("📢 Маркетинг"), KeyboardButton("📦 Прочее")]
+    [KeyboardButton("📢 Маркетинг"), KeyboardButton("📦 Прочее")],
+    [KeyboardButton("❌ Отмена")]
+], resize_keyboard=True)
+
+cancel_keyboard = ReplyKeyboardMarkup([
+    [KeyboardButton("❌ Отмена")]
 ], resize_keyboard=True)
 
 tax_rate_keyboard = ReplyKeyboardMarkup([
@@ -229,6 +247,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• «📊 Статистика» — графики и анализ\n"
         "• «⚙️ Ставка налога» — выбрать 4%, 6% или 13%\n"
         "• «📥 Экспорт» — скачать отчёт\n"
+        "• «↩️ Отменить» — отменить последнюю операцию\n"
         "• «🔄 Сброс» — удалить все данные\n\n"
         "Скоро я научусь понимать твои сообщения и чеки!",
         reply_markup=main_keyboard
@@ -329,12 +348,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if text == "➕ Доход":
         context.user_data["mode"] = "income"
-        await update.message.reply_text("Введи сумму дохода (только число):")
+        await update.message.reply_text("Введи сумму дохода (только число):", reply_markup=cancel_keyboard)
         return
     
     if text == "➖ Расход":
         context.user_data["mode"] = "expense"
-        await update.message.reply_text("Введи сумму расхода (только число):")
+        await update.message.reply_text("Введи сумму расхода (только число):", reply_markup=cancel_keyboard)
         return
     
     if text == "📊 Баланс":
@@ -347,6 +366,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if text == "🔄 Сброс":
         await reset_confirm(update, context)
+        return
+    
+    if text == "↩️ Отменить":
+        result = delete_last_transaction(user_id)
+        if result:
+            trans_type, amount, description, category = result
+            await update.message.reply_text(
+                f"↩️ Отменено: {'➕' if trans_type == 'income' else '➖'} {format_amount(amount)} ₽ ({category})",
+                reply_markup=main_keyboard
+            )
+        else:
+            await update.message.reply_text("Нечего отменять!", reply_markup=main_keyboard)
         return
     
     if text == "📥 Экспорт":
@@ -383,8 +414,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     if text == "❌ Отмена":
-        context.user_data["reset_pending"] = False
-        await update.message.reply_text("❌ Удаление отменено.", reply_markup=main_keyboard)
+        context.user_data.pop("mode", None)
+        context.user_data.pop("reset_pending", None)
+        context.user_data.pop("pending_amount", None)
+        await update.message.reply_text("❌ Отменено.", reply_markup=main_keyboard)
         return
     
     if text == "🧾 О налогах":
