@@ -30,8 +30,9 @@ def init_db():
             goal REAL DEFAULT 0
         )
     """)
+    cursor.execute("DROP TABLE IF EXISTS reviews")
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS reviews (
+        CREATE TABLE reviews (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER UNIQUE,
             rating INTEGER,
