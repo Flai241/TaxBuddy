@@ -1,11 +1,13 @@
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+import os
 
 BOT_TOKEN = "8381828847:AAFaWP-IXVvdVJSpEac1hciXRWOAidHTHT0"
 
 MAX_AMOUNT = 10_000_000
+SELF_EMPLOYED_LIMIT = 2_400_000
 
 def init_db():
     conn = sqlite3.connect("taxbuddy.db")
@@ -21,6 +23,35 @@ def init_db():
             date TEXT
         )
     """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            tax_rate REAL DEFAULT 6.0
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+def get_tax_rate(user_id):
+    conn = sqlite3.connect("taxbuddy.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT tax_rate FROM users WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    conn.close()
+    if row:
+        return row[0]
+    else:
+        conn = sqlite3.connect("taxbuddy.db")
+        cursor = conn.cursor()
+        cursor.execute("INSERT OR IGNORE INTO users (user_id, tax_rate) VALUES (?, 6.0)", (user_id,))
+        conn.commit()
+        conn.close()
+        return 6.0
+
+def set_tax_rate(user_id, rate):
+    conn = sqlite3.connect("taxbuddy.db")
+    cursor = conn.cursor()
+    cursor.execute("INSERT OR REPLACE INTO users (user_id, tax_rate) VALUES (?, ?)", (user_id, rate))
     conn.commit()
     conn.close()
 
@@ -42,9 +73,19 @@ def get_balance(user_id):
     conn.close()
     income = rows.get("income", 0)
     expense = rows.get("expense", 0)
-    tax = round(income * 0.06, 2)
+    tax_rate = get_tax_rate(user_id)
+    tax = round(income * tax_rate / 100, 2)
     net = income - tax - expense
-    return income, expense, tax, net
+    return income, expense, tax, net, tax_rate
+
+def get_year_income(user_id):
+    year_start = f"{datetime.now().year}-01-01"
+    conn = sqlite3.connect("taxbuddy.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT SUM(amount) FROM transactions WHERE user_id = ? AND type = 'income' AND date >= ?", (user_id, year_start))
+    row = cursor.fetchone()
+    conn.close()
+    return row[0] if row[0] else 0
 
 def get_stats(user_id):
     conn = sqlite3.connect("taxbuddy.db")
@@ -84,9 +125,10 @@ def get_stats(user_id):
     
     total_income = rows.get("income", 0)
     total_expense = rows.get("expense", 0)
-    total_tax = round(total_income * 0.06, 2)
+    tax_rate = get_tax_rate(user_id)
+    total_tax = round(total_income * tax_rate / 100, 2)
     
-    return income_by_month, expense_by_category, income_by_category, total_income, total_expense, total_tax
+    return income_by_month, expense_by_category, income_by_category, total_income, total_expense, total_tax, tax_rate
 
 def draw_chart(data, max_width=15):
     if not data:
@@ -117,10 +159,43 @@ def format_amount(amount):
     else:
         return f"-{abs(amount):,.0f}".replace(",", " ")
 
+def export_report(user_id):
+    conn = sqlite3.connect("taxbuddy.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT type, amount, description, category, date FROM transactions WHERE user_id = ? ORDER BY date DESC LIMIT 100", (user_id,))
+    rows = cursor.fetchall()
+    conn.close()
+    
+    income, expense, tax, net, tax_rate = get_balance(user_id)
+    year_income = get_year_income(user_id)
+    limit_left = SELF_EMPLOYED_LIMIT - year_income if tax_rate in [4.0, 6.0] else None
+    
+    report = "📄 ОТЧЁТ TAXBUDDY\n"
+    report += f"Дата: {datetime.now().strftime('%d.%m.%Y %H:%M')}\n"
+    report += f"Ставка налога: {tax_rate}%\n\n"
+    report += f"💰 Всего доходов: {format_amount(income)} ₽\n"
+    report += f"💸 Всего расходов: {format_amount(expense)} ₽\n"
+    report += f"🧾 Налог к уплате: {format_amount(tax)} ₽\n"
+    report += f"✅ Чистый остаток: {format_amount(net)} ₽\n"
+    
+    if limit_left is not None:
+        report += f"\n📊 До лимита (2,4 млн): {format_amount(limit_left)} ₽\n"
+    
+    report += "\n━━━━━━━━━━━━━━━━\n"
+    report += "📋 ПОСЛЕДНИЕ ОПЕРАЦИИ:\n\n"
+    
+    for row in rows:
+        trans_type, amount, description, category, date = row
+        emoji = "➕" if trans_type == "income" else "➖"
+        report += f"{emoji} {format_amount(amount)} ₽ | {category} | {description} | {date}\n"
+    
+    return report
+
 main_keyboard = ReplyKeyboardMarkup([
     [KeyboardButton("➕ Доход"), KeyboardButton("➖ Расход")],
     [KeyboardButton("📊 Баланс"), KeyboardButton("📊 Статистика")],
     [KeyboardButton("🧾 О налогах"), KeyboardButton("ℹ️ Помощь")],
+    [KeyboardButton("⚙️ Ставка налога"), KeyboardButton("📥 Экспорт")],
     [KeyboardButton("🔄 Сброс")]
 ], resize_keyboard=True)
 
@@ -128,6 +203,13 @@ category_keyboard = ReplyKeyboardMarkup([
     [KeyboardButton("🚕 Такси"), KeyboardButton("📱 Подписки")],
     [KeyboardButton("🍔 Еда"), KeyboardButton("💼 Офис")],
     [KeyboardButton("📢 Маркетинг"), KeyboardButton("📦 Прочее")]
+], resize_keyboard=True)
+
+tax_rate_keyboard = ReplyKeyboardMarkup([
+    [KeyboardButton("4% (самозанятый, физлица)")],
+    [KeyboardButton("6% (самозанятый, юрлица/ИП)")],
+    [KeyboardButton("13% (НДФЛ)")],
+    [KeyboardButton("❌ Отмена")]
 ], resize_keyboard=True)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -145,34 +227,44 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Нажми «➖ Расход», введи сумму и выбери категорию\n"
         "• «📊 Баланс» — посчитать налог\n"
         "• «📊 Статистика» — графики и анализ\n"
-        "• «🔄 Сброс» — удалить все данные\n"
-        "• «🧾 О налогах» — узнать про налоги\n\n"
+        "• «⚙️ Ставка налога» — выбрать 4%, 6% или 13%\n"
+        "• «📥 Экспорт» — скачать отчёт\n"
+        "• «🔄 Сброс» — удалить все данные\n\n"
         "Скоро я научусь понимать твои сообщения и чеки!",
         reply_markup=main_keyboard
     )
 
 async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    income, expense, tax, net = get_balance(user_id)
+    income, expense, tax, net, tax_rate = get_balance(user_id)
+    year_income = get_year_income(user_id)
     
+    warning = ""
     if net < 0:
-        warning = f"\n\n⚠️ Внимание! Твои расходы ({format_amount(expense)} ₽) превышают чистый доход. Ты в минусе на {format_amount(abs(net))} ₽."
-    else:
-        warning = ""
+        warning += f"\n\n⚠️ Твои расходы ({format_amount(expense)} ₽) превышают чистый доход. Ты в минусе на {format_amount(abs(net))} ₽."
+    
+    limit_info = ""
+    if tax_rate in [4.0, 6.0]:
+        limit_left = SELF_EMPLOYED_LIMIT - year_income
+        percent = round((year_income / SELF_EMPLOYED_LIMIT) * 100, 1)
+        limit_info = f"\n\n📊 Лимит самозанятого:\nИспользовано: {format_amount(year_income)} ₽ ({percent}%)\nОсталось: {format_amount(limit_left)} ₽"
+        if limit_left < 0:
+            limit_info += "\n⚠️ Лимит превышен!"
     
     await update.message.reply_text(
         f"📊 Твой баланс:\n\n"
         f"💰 Доходы: {format_amount(income)} ₽\n"
         f"💸 Расходы: {format_amount(expense)} ₽\n"
-        f"🧾 Налог к уплате (6%): {format_amount(tax)} ₽\n\n"
+        f"🧾 Налог к уплате ({tax_rate}%): {format_amount(tax)} ₽\n\n"
         f"✅ Чистый остаток: {format_amount(net)} ₽"
+        f"{limit_info}"
         f"{warning}",
         reply_markup=main_keyboard
     )
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    income_by_month, expense_by_category, income_by_category, total_income, total_expense, total_tax = get_stats(user_id)
+    income_by_month, expense_by_category, income_by_category, total_income, total_expense, total_tax, tax_rate = get_stats(user_id)
     
     if total_income == 0 and total_expense == 0:
         await update.message.reply_text(
@@ -196,20 +288,28 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"💵 Общий доход: {format_amount(total_income)} ₽\n"
         f"💸 Общие расходы: {format_amount(total_expense)} ₽\n"
         f"📊 Средний доход в месяц: {format_amount(avg_income)} ₽\n"
-        f"🧾 Налог за всё время (6%): {format_amount(total_tax)} ₽",
+        f"🧾 Налог за всё время ({tax_rate}%): {format_amount(total_tax)} ₽",
         reply_markup=main_keyboard
     )
 
 async def tax_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🧾 О налогах для самозанятых:\n\n"
-        "• 4% — с доходов от физлиц\n"
-        "• 6% — с доходов от юрлиц и ИП\n"
+        "🧾 О налогах:\n\n"
+        "• 4% — с доходов от физлиц (самозанятый)\n"
+        "• 6% — с доходов от юрлиц и ИП (самозанятый)\n"
+        "• 13% — НДФЛ для ИП и физлиц\n\n"
+        "Самозанятые:\n"
         "• Нет обязательных взносов\n"
-        "• Лимит дохода: 2,4 млн ₽/год\n\n"
-        "Оплата до 25 числа следующего месяца.\n"
-        "Я считаю по ставке 6%.",
+        "• Лимит дохода: 2,4 млн ₽/год\n"
+        "• Оплата до 25 числа следующего месяца\n\n"
+        "Выбери свою ставку в «⚙️ Ставка налога».",
         reply_markup=main_keyboard
+    )
+
+async def set_tax_rate_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Выбери налоговую ставку:",
+        reply_markup=tax_rate_keyboard
     )
 
 async def reset_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -247,6 +347,30 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if text == "🔄 Сброс":
         await reset_confirm(update, context)
+        return
+    
+    if text == "📥 Экспорт":
+        report = export_report(user_id)
+        await update.message.reply_text(report, reply_markup=main_keyboard)
+        return
+    
+    if text == "⚙️ Ставка налога":
+        await set_tax_rate_cmd(update, context)
+        return
+    
+    if text == "4% (самозанятый, физлица)":
+        set_tax_rate(user_id, 4.0)
+        await update.message.reply_text("✅ Ставка налога изменена на 4%", reply_markup=main_keyboard)
+        return
+    
+    if text == "6% (самозанятый, юрлица/ИП)":
+        set_tax_rate(user_id, 6.0)
+        await update.message.reply_text("✅ Ставка налога изменена на 6%", reply_markup=main_keyboard)
+        return
+    
+    if text == "13% (НДФЛ)":
+        set_tax_rate(user_id, 13.0)
+        await update.message.reply_text("✅ Ставка налога изменена на 13%", reply_markup=main_keyboard)
         return
     
     if text == "✅ Да, удалить":
