@@ -5,7 +5,6 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 
 BOT_TOKEN = "8381828847:AAFaWP-IXVvdVJSpEac1hciXRWOAidHTHT0"
 
-
 MAX_AMOUNT = 10_000_000
 SELF_EMPLOYED_LIMIT = 2_400_000
 SERVER_TZ = "UTC-7"
@@ -633,9 +632,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if text in ["⭐5", "⭐4", "⭐3", "⭐2", "⭐1"]:
         rating = int(text[1])
-        context.user_data["review_filter"] = rating
-        context.user_data["review_offset"] = 0
-        await show_filtered_reviews(update, context, rating, 0)
+        if context.user_data.get("feedback_pending"):
+            context.user_data["feedback_pending"] = False
+            context.user_data["feedback_rating"] = rating
+            await update.message.reply_text(f"Поставил {rating} ⭐. Теперь напиши отзыв:", reply_markup=cancel_keyboard)
+        else:
+            context.user_data["review_filter"] = rating
+            context.user_data["review_offset"] = 0
+            await show_filtered_reviews(update, context, rating, 0)
         return
     
     if text == "🌟 Все":
@@ -711,12 +715,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data.pop("pending_amount", None)
         else:
             await update.message.reply_text("Сначала введи сумму расхода!", reply_markup=main_keyboard)
-        return
-    
-    if text in ["⭐1", "⭐2", "⭐3", "⭐4", "⭐5"]:
-        rating = int(text[1])
-        context.user_data["feedback_rating"] = rating
-        await update.message.reply_text(f"Поставил {rating} ⭐. Теперь напиши отзыв:", reply_markup=cancel_keyboard)
         return
     
     if "feedback_rating" in context.user_data:
@@ -797,4 +795,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
