@@ -1,10 +1,11 @@
 import sqlite3
-import os
 from datetime import datetime
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-BOT_TOKEN = "8381828847:AAFaWP-IXVvdVJSpEac1hciXRWOAidHTHT0"
+BOT_TOKEN = "твой_токен_сюда"
+
+MAX_AMOUNT = 10_000_000
 
 def init_db():
     conn = sqlite3.connect("taxbuddy.db")
@@ -41,14 +42,26 @@ def get_balance(user_id):
     conn.close()
     income = rows.get("income", 0)
     expense = rows.get("expense", 0)
-    tax_base = income - expense
-    tax = round(tax_base * 0.06, 2) if tax_base > 0 else 0
-    return income, expense, tax_base, tax
+    tax = round(income * 0.06, 2)
+    net = income - tax - expense
+    return income, expense, tax, net
+
+def format_amount(amount):
+    if amount >= 0:
+        return f"{amount:,.0f}".replace(",", " ")
+    else:
+        return f"-{abs(amount):,.0f}".replace(",", " ")
 
 main_keyboard = ReplyKeyboardMarkup([
     [KeyboardButton("➕ Доход"), KeyboardButton("➖ Расход")],
     [KeyboardButton("📊 Баланс"), KeyboardButton("🧾 О налогах")],
     [KeyboardButton("ℹ️ Помощь")]
+], resize_keyboard=True)
+
+category_keyboard = ReplyKeyboardMarkup([
+    [KeyboardButton("🚕 Такси"), KeyboardButton("📱 Подписки")],
+    [KeyboardButton("🍔 Еда"), KeyboardButton("💼 Офис")],
+    [KeyboardButton("📢 Маркетинг"), KeyboardButton("📦 Прочее")]
 ], resize_keyboard=True)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -63,7 +76,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "📘 Как пользоваться:\n\n"
         "• Нажми «➕ Доход» и введи сумму\n"
-        "• Нажми «➖ Расход» и введи сумму\n"
+        "• Нажми «➖ Расход», введи сумму и выбери категорию\n"
         "• «📊 Баланс» — посчитать налог\n"
         "• «🧾 О налогах» — узнать про налоги\n\n"
         "Скоро я научусь понимать твои сообщения и чеки!",
@@ -72,14 +85,20 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    income, expense, tax_base, tax = get_balance(user_id)
+    income, expense, tax, net = get_balance(user_id)
+    
+    if net < 0:
+        warning = f"\n\n⚠️ Внимание! Твои расходы ({format_amount(expense)} ₽) превышают чистый доход. Ты в минусе на {format_amount(abs(net))} ₽."
+    else:
+        warning = ""
+    
     await update.message.reply_text(
         f"📊 Твой баланс:\n\n"
-        f"💰 Доходы: {income} ₽\n"
-        f"💸 Расходы: {expense} ₽\n"
-        f"📌 Налоговая база: {tax_base} ₽\n"
-        f"🧾 Налог к уплате (6%): {tax} ₽\n\n"
-        f"✅ Можно тратить: {income - expense - tax} ₽",
+        f"💰 Доходы: {format_amount(income)} ₽\n"
+        f"💸 Расходы: {format_amount(expense)} ₽\n"
+        f"🧾 Налог к уплате (6%): {format_amount(tax)} ₽\n\n"
+        f"✅ Чистый остаток: {format_amount(net)} ₽"
+        f"{warning}",
         reply_markup=main_keyboard
     )
 
@@ -121,6 +140,28 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await help_cmd(update, context)
         return
     
+    if text in ["🚕 Такси", "📱 Подписки", "🍔 Еда", "💼 Офис", "📢 Маркетинг", "📦 Прочее"]:
+        pending_amount = context.user_data.get("pending_amount")
+        if pending_amount:
+            category_map = {
+                "🚕 Такси": "Такси",
+                "📱 Подписки": "Подписки",
+                "🍔 Еда": "Еда",
+                "💼 Офис": "Офис",
+                "📢 Маркетинг": "Маркетинг",
+                "📦 Прочее": "Прочее"
+            }
+            category = category_map[text]
+            add_transaction(user_id, "expense", pending_amount, "Расход", category)
+            await update.message.reply_text(
+                f"✅ Записал расход: {format_amount(pending_amount)} ₽ ({category})",
+                reply_markup=main_keyboard
+            )
+            context.user_data.pop("pending_amount", None)
+        else:
+            await update.message.reply_text("Сначала введи сумму расхода!", reply_markup=main_keyboard)
+        return
+    
     mode = context.user_data.get("mode")
     if mode:
         try:
@@ -128,15 +169,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if amount <= 0:
                 await update.message.reply_text("Сумма должна быть больше нуля!")
                 return
+            if amount > MAX_AMOUNT:
+                await update.message.reply_text(f"Сумма не может быть больше {format_amount(MAX_AMOUNT)} ₽!")
+                return
             
             if mode == "income":
                 add_transaction(user_id, "income", amount, "Доход", "Работа")
-                await update.message.reply_text(f"✅ Записал доход: {amount} ₽", reply_markup=main_keyboard)
+                await update.message.reply_text(
+                    f"✅ Записал доход: {format_amount(amount)} ₽",
+                    reply_markup=main_keyboard
+                )
+                context.user_data["mode"] = None
             else:
-                add_transaction(user_id, "expense", amount, "Расход", "Прочее")
-                await update.message.reply_text(f"✅ Записал расход: {amount} ₽", reply_markup=main_keyboard)
-            
-            context.user_data["mode"] = None
+                context.user_data["pending_amount"] = amount
+                context.user_data["mode"] = None
+                await update.message.reply_text(
+                    f"Сумма: {format_amount(amount)} ₽. Выбери категорию расхода:",
+                    reply_markup=category_keyboard
+                )
         except ValueError:
             await update.message.reply_text("Введи только число! Например: 5000")
     else:
