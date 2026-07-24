@@ -3,7 +3,7 @@ from datetime import datetime
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-BOT_TOKEN = "8381828847:AAFaWP-IXVvdVJSpEac1hciXRWOAidHTHT0"
+BOT_TOKEN = "твой_токен_сюда"
 
 MAX_AMOUNT = 10_000_000
 SELF_EMPLOYED_LIMIT = 2_400_000
@@ -133,9 +133,13 @@ def get_reviews(rating_filter=0, offset=0, limit=5):
         cursor.execute("SELECT AVG(rating), COUNT(*) FROM reviews")
     
     rows = cursor.fetchall()
-    avg, count = cursor.fetchone()
+    avg_row = cursor.fetchone()
+    if avg_row and avg_row[0] is not None:
+        avg, count = round(avg_row[0], 1), avg_row[1]
+    else:
+        avg, count = 0, 0
     conn.close()
-    return rows, round(avg, 1) if avg else 0, count
+    return rows, avg, count
 
 def has_more_reviews(rating_filter=0, offset=0, limit=5):
     conn = sqlite3.connect("taxbuddy.db")
