@@ -4,7 +4,7 @@ from datetime import datetime
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
+BOT_TOKEN = "8381828847:AAFaWP-IXVvdVJSpEac1hciXRWOAidHTHT0"
 
 def init_db():
     conn = sqlite3.connect("taxbuddy.db")
