@@ -536,9 +536,12 @@ async def show_filtered_reviews(update: Update, context: ContextTypes.DEFAULT_TY
     filter_text = f"⭐{rating_filter}" if rating_filter > 0 else "🌟 Все"
     text = f"Отзывы ({filter_text}):\n\n"
     
-    for rating, review_text, date in reviews:
+    for row in reviews:
+        rating = row[0]
+        review_text = row[1]
+        date_str = f"\n📅 {row[2]}" if len(row) > 2 else ""
         stars = "⭐" * rating
-        text += f"{stars}\n{review_text}\n📅 {date}\n\n"
+        text += f"{stars}\n{review_text}{date_str}\n\n"
     
     more = has_more_reviews(rating_filter, offset)
     if more:
