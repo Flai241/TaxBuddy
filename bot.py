@@ -5,6 +5,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 
 BOT_TOKEN = "8381828847:AAFaWP-IXVvdVJSpEac1hciXRWOAidHTHT0"
 
+
 MAX_AMOUNT = 10_000_000
 SELF_EMPLOYED_LIMIT = 2_400_000
 SERVER_TZ = "UTC-7"
