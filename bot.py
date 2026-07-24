@@ -46,6 +46,71 @@ def get_balance(user_id):
     net = income - tax - expense
     return income, expense, tax, net
 
+def get_stats(user_id):
+    conn = sqlite3.connect("taxbuddy.db")
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        SELECT strftime('%Y-%m', date) as month, SUM(amount) 
+        FROM transactions 
+        WHERE user_id = ? AND type = 'income' 
+        GROUP BY month 
+        ORDER BY month DESC 
+        LIMIT 6
+    """, (user_id,))
+    income_by_month = cursor.fetchall()
+    
+    cursor.execute("""
+        SELECT category, SUM(amount) 
+        FROM transactions 
+        WHERE user_id = ? AND type = 'expense' 
+        GROUP BY category 
+        ORDER BY SUM(amount) DESC
+    """, (user_id,))
+    expense_by_category = cursor.fetchall()
+    
+    cursor.execute("""
+        SELECT category, SUM(amount) 
+        FROM transactions 
+        WHERE user_id = ? AND type = 'income' 
+        GROUP BY category 
+        ORDER BY SUM(amount) DESC
+    """, (user_id,))
+    income_by_category = cursor.fetchall()
+    
+    cursor.execute("SELECT type, SUM(amount) FROM transactions WHERE user_id = ? GROUP BY type", (user_id,))
+    rows = dict(cursor.fetchall())
+    conn.close()
+    
+    total_income = rows.get("income", 0)
+    total_expense = rows.get("expense", 0)
+    total_tax = round(total_income * 0.06, 2)
+    
+    return income_by_month, expense_by_category, income_by_category, total_income, total_expense, total_tax
+
+def draw_chart(data, max_width=15):
+    if not data:
+        return "Нет данных"
+    
+    max_value = max([row[1] for row in data])
+    if max_value == 0:
+        return "Нет данных"
+    
+    lines = []
+    for label, value in data:
+        bar_width = int((value / max_value) * max_width) if max_value > 0 else 0
+        bar = "█" * bar_width
+        lines.append(f"{label}: {bar} {format_amount(value)} ₽")
+    
+    return "\n".join(lines)
+
+def reset_user_data(user_id):
+    conn = sqlite3.connect("taxbuddy.db")
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM transactions WHERE user_id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+
 def format_amount(amount):
     if amount >= 0:
         return f"{amount:,.0f}".replace(",", " ")
@@ -54,8 +119,9 @@ def format_amount(amount):
 
 main_keyboard = ReplyKeyboardMarkup([
     [KeyboardButton("➕ Доход"), KeyboardButton("➖ Расход")],
-    [KeyboardButton("📊 Баланс"), KeyboardButton("🧾 О налогах")],
-    [KeyboardButton("ℹ️ Помощь")]
+    [KeyboardButton("📊 Баланс"), KeyboardButton("📊 Статистика")],
+    [KeyboardButton("🧾 О налогах"), KeyboardButton("ℹ️ Помощь")],
+    [KeyboardButton("🔄 Сброс")]
 ], resize_keyboard=True)
 
 category_keyboard = ReplyKeyboardMarkup([
@@ -78,6 +144,8 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Нажми «➕ Доход» и введи сумму\n"
         "• Нажми «➖ Расход», введи сумму и выбери категорию\n"
         "• «📊 Баланс» — посчитать налог\n"
+        "• «📊 Статистика» — графики и анализ\n"
+        "• «🔄 Сброс» — удалить все данные\n"
         "• «🧾 О налогах» — узнать про налоги\n\n"
         "Скоро я научусь понимать твои сообщения и чеки!",
         reply_markup=main_keyboard
@@ -102,6 +170,36 @@ async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=main_keyboard
     )
 
+async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    income_by_month, expense_by_category, income_by_category, total_income, total_expense, total_tax = get_stats(user_id)
+    
+    if total_income == 0 and total_expense == 0:
+        await update.message.reply_text(
+            "📊 У тебя пока нет данных для статистики. Добавь доходы и расходы!",
+            reply_markup=main_keyboard
+        )
+        return
+    
+    income_chart = draw_chart(income_by_month[::-1])
+    expense_chart = draw_chart(expense_by_category)
+    income_cat_chart = draw_chart(income_by_category)
+    
+    months_count = len(income_by_month) if income_by_month else 1
+    avg_income = total_income / months_count if months_count > 0 else total_income
+    
+    await update.message.reply_text(
+        f"📊 Статистика:\n\n"
+        f"📈 Доходы по месяцам:\n{income_chart}\n\n"
+        f"💰 Доходы по категориям:\n{income_cat_chart}\n\n"
+        f"📂 Расходы по категориям:\n{expense_chart}\n\n"
+        f"💵 Общий доход: {format_amount(total_income)} ₽\n"
+        f"💸 Общие расходы: {format_amount(total_expense)} ₽\n"
+        f"📊 Средний доход в месяц: {format_amount(avg_income)} ₽\n"
+        f"🧾 Налог за всё время (6%): {format_amount(total_tax)} ₽",
+        reply_markup=main_keyboard
+    )
+
 async def tax_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🧾 О налогах для самозанятых:\n\n"
@@ -112,6 +210,17 @@ async def tax_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Оплата до 25 числа следующего месяца.\n"
         "Я считаю по ставке 6%.",
         reply_markup=main_keyboard
+    )
+
+async def reset_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["reset_pending"] = True
+    await update.message.reply_text(
+        "⚠️ Ты уверен, что хочешь удалить ВСЕ данные?\n\n"
+        "Это действие нельзя отменить!\n\n"
+        "Нажми «✅ Да, удалить» для подтверждения или любую другую кнопку для отмены.",
+        reply_markup=ReplyKeyboardMarkup([
+            [KeyboardButton("✅ Да, удалить"), KeyboardButton("❌ Отмена")]
+        ], resize_keyboard=True)
     )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -130,6 +239,28 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if text == "📊 Баланс":
         await balance(update, context)
+        return
+    
+    if text == "📊 Статистика":
+        await stats(update, context)
+        return
+    
+    if text == "🔄 Сброс":
+        await reset_confirm(update, context)
+        return
+    
+    if text == "✅ Да, удалить":
+        if context.user_data.get("reset_pending"):
+            reset_user_data(update.effective_user.id)
+            context.user_data["reset_pending"] = False
+            await update.message.reply_text("✅ Все данные удалены. Начинаем с чистого листа!", reply_markup=main_keyboard)
+        else:
+            await update.message.reply_text("Нечего удалять!", reply_markup=main_keyboard)
+        return
+    
+    if text == "❌ Отмена":
+        context.user_data["reset_pending"] = False
+        await update.message.reply_text("❌ Удаление отменено.", reply_markup=main_keyboard)
         return
     
     if text == "🧾 О налогах":
@@ -201,6 +332,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("balance", balance))
+    app.add_handler(CommandHandler("stats", stats))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     print("Бот запущен!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
