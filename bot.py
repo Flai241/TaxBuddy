@@ -30,9 +30,8 @@ def init_db():
             goal REAL DEFAULT 0
         )
     """)
-    cursor.execute("DROP TABLE IF EXISTS reviews")
     cursor.execute("""
-        CREATE TABLE reviews (
+        CREATE TABLE IF NOT EXISTS reviews (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER UNIQUE,
             rating INTEGER,
@@ -40,6 +39,10 @@ def init_db():
             date TEXT
         )
     """)
+    cursor.execute("PRAGMA table_info(reviews)")
+    columns = [col[1] for col in cursor.fetchall()]
+    if "date" not in columns:
+        cursor.execute("ALTER TABLE reviews ADD COLUMN date TEXT")
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS promos (
             code TEXT PRIMARY KEY,
