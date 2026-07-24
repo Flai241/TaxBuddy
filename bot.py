@@ -3,7 +3,7 @@ from datetime import datetime
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-BOT_TOKEN = "8381828847:AAFaWP-IXVvdVJSpEac1hciXRWOAidHTHT0"
+BOT_TOKEN = "твой_токен_сюда"
 
 MAX_AMOUNT = 10_000_000
 SELF_EMPLOYED_LIMIT = 2_400_000
@@ -122,15 +122,31 @@ def add_review(user_id, rating, text):
     conn.commit()
     conn.close()
 
-def get_reviews(limit=5):
+def get_reviews(rating_filter=0, offset=0, limit=5):
     conn = sqlite3.connect("taxbuddy.db")
     cursor = conn.cursor()
-    cursor.execute("SELECT rating, text, date FROM reviews ORDER BY id DESC LIMIT ?", (limit,))
+    if rating_filter > 0:
+        cursor.execute("SELECT rating, text, date FROM reviews WHERE rating = ? ORDER BY id DESC LIMIT ? OFFSET ?", (rating_filter, limit, offset))
+        cursor.execute("SELECT AVG(rating), COUNT(*) FROM reviews WHERE rating = ?", (rating_filter,))
+    else:
+        cursor.execute("SELECT rating, text, date FROM reviews ORDER BY id DESC LIMIT ? OFFSET ?", (limit, offset))
+        cursor.execute("SELECT AVG(rating), COUNT(*) FROM reviews")
+    
     rows = cursor.fetchall()
-    cursor.execute("SELECT AVG(rating), COUNT(*) FROM reviews")
     avg, count = cursor.fetchone()
     conn.close()
     return rows, round(avg, 1) if avg else 0, count
+
+def has_more_reviews(rating_filter=0, offset=0, limit=5):
+    conn = sqlite3.connect("taxbuddy.db")
+    cursor = conn.cursor()
+    if rating_filter > 0:
+        cursor.execute("SELECT COUNT(*) FROM reviews WHERE rating = ?", (rating_filter,))
+    else:
+        cursor.execute("SELECT COUNT(*) FROM reviews")
+    total = cursor.fetchone()[0]
+    conn.close()
+    return total > offset + limit
 
 def check_promo(code):
     conn = sqlite3.connect("taxbuddy.db")
@@ -295,31 +311,42 @@ more_keyboard = ReplyKeyboardMarkup([
     [KeyboardButton("🎯 Цель"), KeyboardButton("⚙️ Ставка налога")],
     [KeyboardButton("🧾 О налогах"), KeyboardButton("⭐ Отзывы")],
     [KeyboardButton("🎟️ Промокод"), KeyboardButton("↩️ Отменить")],
-    [KeyboardButton("🔄 Сброс"), KeyboardButton("❌ Назад")]
+    [KeyboardButton("🔄 Сброс"), KeyboardButton("⬅️ Назад")]
+], resize_keyboard=True)
+
+review_menu_keyboard = ReplyKeyboardMarkup([
+    [KeyboardButton("📝 Оставить отзыв"), KeyboardButton("📖 Посмотреть отзывы")],
+    [KeyboardButton("⬅️ Назад")]
+], resize_keyboard=True)
+
+review_filter_keyboard = ReplyKeyboardMarkup([
+    [KeyboardButton("⭐5"), KeyboardButton("⭐4"), KeyboardButton("⭐3")],
+    [KeyboardButton("⭐2"), KeyboardButton("⭐1"), KeyboardButton("🌟 Все")],
+    [KeyboardButton("⬅️ Назад")]
 ], resize_keyboard=True)
 
 category_keyboard = ReplyKeyboardMarkup([
     [KeyboardButton("🚕 Такси"), KeyboardButton("📱 Подписки")],
     [KeyboardButton("🍔 Еда"), KeyboardButton("💼 Офис")],
     [KeyboardButton("📢 Маркетинг"), KeyboardButton("📦 Прочее")],
-    [KeyboardButton("❌ Отмена")]
+    [KeyboardButton("⬅️ Назад")]
 ], resize_keyboard=True)
 
 cancel_keyboard = ReplyKeyboardMarkup([
-    [KeyboardButton("❌ Отмена")]
+    [KeyboardButton("⬅️ Назад")]
 ], resize_keyboard=True)
 
 tax_rate_keyboard = ReplyKeyboardMarkup([
     [KeyboardButton("4% (самозанятый, физлица)")],
     [KeyboardButton("6% (самозанятый, юрлица/ИП)")],
     [KeyboardButton("13% (НДФЛ)")],
-    [KeyboardButton("❌ Отмена")]
+    [KeyboardButton("⬅️ Назад")]
 ], resize_keyboard=True)
 
 review_rate_keyboard = ReplyKeyboardMarkup([
     [KeyboardButton("⭐1"), KeyboardButton("⭐2"), KeyboardButton("⭐3")],
     [KeyboardButton("⭐4"), KeyboardButton("⭐5")],
-    [KeyboardButton("❌ Отмена")]
+    [KeyboardButton("⬅️ Назад")]
 ], resize_keyboard=True)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -452,11 +479,14 @@ async def reset_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Это действие нельзя отменить!\n\n"
         "Нажми «✅ Да, удалить» для подтверждения или любую другую кнопку для отмены.",
         reply_markup=ReplyKeyboardMarkup([
-            [KeyboardButton("✅ Да, удалить"), KeyboardButton("❌ Отмена")]
+            [KeyboardButton("✅ Да, удалить"), KeyboardButton("⬅️ Назад")]
         ], resize_keyboard=True)
     )
 
-async def feedback_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def feedback_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("⭐ Отзывы:", reply_markup=review_menu_keyboard)
+
+async def feedback_write(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     conn = sqlite3.connect("taxbuddy.db")
     cursor = conn.cursor()
@@ -466,27 +496,54 @@ async def feedback_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if existing:
         await update.message.reply_text(
-            f"У тебя уже есть отзыв ({existing[0]}⭐). Отправь /feedback снова, чтобы обновить его.\n\n"
-            f"Твой отзыв: «{existing[1]}»",
-            reply_markup=main_keyboard
+            f"У тебя уже есть отзыв ({existing[0]}⭐). Если продолжишь, он обновится.\n\n"
+            f"Твой отзыв: «{existing[1]}»\n\n"
+            "Поставь новую оценку (1-5):",
+            reply_markup=review_rate_keyboard
         )
-        return
-    
-    context.user_data["feedback_pending"] = True
-    await update.message.reply_text("⭐ Поставь оценку боту (1-5):", reply_markup=review_rate_keyboard)
+    else:
+        context.user_data["feedback_pending"] = True
+        await update.message.reply_text("⭐ Поставь оценку боту (1-5):", reply_markup=review_rate_keyboard)
 
-async def reviews_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def feedback_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["review_offset"] = 0
+    context.user_data["review_filter"] = 0
+    
     reviews, avg, count = get_reviews()
     if count == 0:
-        await update.message.reply_text("⭐ Пока нет отзывов. Будь первым — нажми «⭐ Отзывы»!", reply_markup=main_keyboard)
+        await update.message.reply_text("⭐ Пока нет отзывов. Будь первым!", reply_markup=review_menu_keyboard)
         return
     
     text = f"⭐ Средняя оценка: {avg}/5 (всего {count})\n\n"
+    text += "Выбери фильтр:"
+    await update.message.reply_text(text, reply_markup=review_filter_keyboard)
+
+async def show_filtered_reviews(update: Update, context: ContextTypes.DEFAULT_TYPE, rating_filter, offset):
+    reviews, avg, count = get_reviews(rating_filter, offset)
+    
+    if not reviews:
+        await update.message.reply_text("Нет отзывов с таким фильтром.", reply_markup=review_filter_keyboard)
+        return
+    
+    filter_text = f"⭐{rating_filter}" if rating_filter > 0 else "🌟 Все"
+    text = f"Отзывы ({filter_text}):\n\n"
+    
     for rating, review_text, date in reviews:
         stars = "⭐" * rating
         text += f"{stars}\n{review_text}\n📅 {date}\n\n"
     
-    await update.message.reply_text(text, reply_markup=main_keyboard)
+    more = has_more_reviews(rating_filter, offset)
+    if more:
+        text += "Показать ещё 5 отзывов?"
+        await update.message.reply_text(
+            text,
+            reply_markup=ReplyKeyboardMarkup([
+                [KeyboardButton("▶️ Да, ещё"), KeyboardButton("⬅️ Назад к фильтрам")]
+            ], resize_keyboard=True)
+        )
+    else:
+        text += "Это все отзывы."
+        await update.message.reply_text(text, reply_markup=review_filter_keyboard)
 
 async def goal_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["goal_pending"] = True
@@ -504,14 +561,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Дополнительные функции:", reply_markup=more_keyboard)
         return
     
-    if text == "❌ Назад":
+    if text == "⬅️ Назад":
         context.user_data.pop("mode", None)
         context.user_data.pop("reset_pending", None)
         context.user_data.pop("pending_amount", None)
         context.user_data.pop("feedback_pending", None)
         context.user_data.pop("goal_pending", None)
         context.user_data.pop("promo_pending", None)
+        context.user_data.pop("feedback_rating", None)
+        context.user_data.pop("review_offset", None)
+        context.user_data.pop("review_filter", None)
         await update.message.reply_text("Главное меню.", reply_markup=main_keyboard)
+        return
+    
+    if text == "⬅️ Назад к фильтрам":
+        await feedback_view(update, context)
         return
     
     if text == "➕ Доход":
@@ -558,7 +622,35 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     if text == "⭐ Отзывы":
-        await feedback_start(update, context)
+        await feedback_menu(update, context)
+        return
+    
+    if text == "📝 Оставить отзыв":
+        await feedback_write(update, context)
+        return
+    
+    if text == "📖 Посмотреть отзывы":
+        await feedback_view(update, context)
+        return
+    
+    if text in ["⭐5", "⭐4", "⭐3", "⭐2", "⭐1"]:
+        rating = int(text[1])
+        context.user_data["review_filter"] = rating
+        context.user_data["review_offset"] = 0
+        await show_filtered_reviews(update, context, rating, 0)
+        return
+    
+    if text == "🌟 Все":
+        context.user_data["review_filter"] = 0
+        context.user_data["review_offset"] = 0
+        await show_filtered_reviews(update, context, 0, 0)
+        return
+    
+    if text == "▶️ Да, ещё":
+        rating_filter = context.user_data.get("review_filter", 0)
+        offset = context.user_data.get("review_offset", 0) + 5
+        context.user_data["review_offset"] = offset
+        await show_filtered_reviews(update, context, rating_filter, offset)
         return
     
     if text == "🎯 Цель":
@@ -593,16 +685,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Нечего удалять!", reply_markup=main_keyboard)
         return
     
-    if text == "❌ Отмена":
-        context.user_data.pop("mode", None)
-        context.user_data.pop("reset_pending", None)
-        context.user_data.pop("pending_amount", None)
-        context.user_data.pop("feedback_pending", None)
-        context.user_data.pop("goal_pending", None)
-        context.user_data.pop("promo_pending", None)
-        await update.message.reply_text("❌ Отменено.", reply_markup=main_keyboard)
-        return
-    
     if text == "🧾 О налогах":
         await tax_info(update, context)
         return
@@ -634,12 +716,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     if text in ["⭐1", "⭐2", "⭐3", "⭐4", "⭐5"]:
-        if context.user_data.get("feedback_pending"):
-            rating = int(text[1])
-            context.user_data["feedback_rating"] = rating
-            context.user_data["feedback_pending"] = False
-            await update.message.reply_text(f"Поставил {rating} ⭐. Теперь напиши отзыв (или ❌ Отмена):", reply_markup=cancel_keyboard)
-            return
+        rating = int(text[1])
+        context.user_data["feedback_rating"] = rating
+        await update.message.reply_text(f"Поставил {rating} ⭐. Теперь напиши отзыв:", reply_markup=cancel_keyboard)
+        return
     
     if "feedback_rating" in context.user_data:
         rating = context.user_data.pop("feedback_rating")
@@ -709,8 +789,8 @@ def main():
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("balance", balance))
     app.add_handler(CommandHandler("stats", stats))
-    app.add_handler(CommandHandler("feedback", feedback_start))
-    app.add_handler(CommandHandler("reviews", reviews_cmd))
+    app.add_handler(CommandHandler("feedback", feedback_menu))
+    app.add_handler(CommandHandler("reviews", feedback_view))
     app.add_handler(CommandHandler("promo", promo_cmd))
     app.add_handler(CommandHandler("goal", goal_set))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
