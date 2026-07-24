@@ -496,22 +496,8 @@ async def feedback_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def feedback_write(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    conn = sqlite3.connect("taxbuddy.db")
-    cursor = conn.cursor()
-    cursor.execute("SELECT rating, text FROM reviews WHERE user_id = ?", (user_id,))
-    existing = cursor.fetchone()
-    conn.close()
-    
-    if existing:
-        await update.message.reply_text(
-            f"У тебя уже есть отзыв ({existing[0]}⭐). Если продолжишь, он обновится.\n\n"
-            f"Твой отзыв: «{existing[1]}»\n\n"
-            "Поставь новую оценку (1-5):",
-            reply_markup=review_rate_keyboard
-        )
-    else:
-        context.user_data["feedback_pending"] = True
-        await update.message.reply_text("⭐ Поставь оценку боту (1-5):", reply_markup=review_rate_keyboard)
+    context.user_data["feedback_pending"] = True
+    await update.message.reply_text("⭐ Поставь оценку боту (1-5):", reply_markup=review_rate_keyboard)
 
 async def feedback_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["review_offset"] = 0
