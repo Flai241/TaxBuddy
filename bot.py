@@ -553,6 +553,14 @@ async def promo_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text
+    if text == "/dbg":
+        conn = sqlite3.connect("taxbuddy.db")
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM reviews")
+        rows = cursor.fetchall()
+        conn.close()
+        await update.message.reply_text(f"Отзывов в базе: {len(rows)}\n{str(rows)[:500]}")
+        return
     
     if text == "🔔 Ещё":
         await update.message.reply_text("Дополнительные функции:", reply_markup=more_keyboard)
