@@ -33,7 +33,7 @@ def init_db():
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS reviews (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
+            user_id INTEGER UNIQUE,
             rating INTEGER,
             text TEXT,
             date TEXT
@@ -116,6 +116,7 @@ def delete_last_transaction(user_id):
 def add_review(user_id, rating, text):
     conn = sqlite3.connect("taxbuddy.db")
     cursor = conn.cursor()
+    cursor.execute("DELETE FROM reviews WHERE user_id = ?", (user_id,))
     cursor.execute("INSERT INTO reviews (user_id, rating, text, date) VALUES (?, ?, ?, ?)",
                    (user_id, rating, text, datetime.now().strftime("%Y-%m-%d %H:%M")))
     conn.commit()
@@ -366,8 +367,12 @@ async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if goal > 0:
         percent = round((month_income / goal) * 100, 1) if goal > 0 else 0
         left = goal - month_income
-        bar = "█" * min(int(percent / 10), 10) + "░" * max(10 - int(percent / 10), 0)
-        goal_info = f"\n\n🎯 Цель на месяц: {format_amount(goal)} ₽\nПрогресс: [{bar}] {percent}%\nОсталось: {format_amount(left)} ₽" if left > 0 else f"\n\n🎯 Цель на месяц: {format_amount(goal)} ₽\nПрогресс: [{bar}] {percent}%\n✅ Цель достигнута!"
+        bar_len = min(int(percent / 10), 10)
+        bar = "█" * bar_len + "░" * (10 - bar_len)
+        if left > 0:
+            goal_info = f"\n\n🎯 Цель на месяц: {format_amount(goal)} ₽\nПрогресс: [{bar}] {percent}%\nОсталось: {format_amount(left)} ₽"
+        else:
+            goal_info = f"\n\n🎯 Цель на месяц: {format_amount(goal)} ₽\nПрогресс: [{bar}] {percent}%\n✅ Цель достигнута!"
     
     await update.message.reply_text(
         f"📊 Твой баланс:\n\n"
@@ -419,7 +424,6 @@ async def tax_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
         deadline_date = f"25.{now.month:02d}.{now.year}"
         tax_for = f"{deadline_month:02d}.{now.year}"
     else:
-        deadline_month = now.month
         deadline_date = f"25.{now.month + 1:02d}.{now.year}" if now.month < 12 else f"25.01.{now.year + 1}"
         tax_for = f"{now.month:02d}.{now.year}"
     
@@ -453,13 +457,28 @@ async def reset_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def feedback_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    conn = sqlite3.connect("taxbuddy.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT rating, text FROM reviews WHERE user_id = ?", (user_id,))
+    existing = cursor.fetchone()
+    conn.close()
+    
+    if existing:
+        await update.message.reply_text(
+            f"У тебя уже есть отзыв ({existing[0]}⭐). Отправь /feedback снова, чтобы обновить его.\n\n"
+            f"Твой отзыв: «{existing[1]}»",
+            reply_markup=main_keyboard
+        )
+        return
+    
     context.user_data["feedback_pending"] = True
     await update.message.reply_text("⭐ Поставь оценку боту (1-5):", reply_markup=review_rate_keyboard)
 
 async def reviews_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reviews, avg, count = get_reviews()
     if count == 0:
-        await update.message.reply_text("⭐ Пока нет отзывов. Будь первым — напиши /feedback!", reply_markup=main_keyboard)
+        await update.message.reply_text("⭐ Пока нет отзывов. Будь первым — нажми «⭐ Отзывы»!", reply_markup=main_keyboard)
         return
     
     text = f"⭐ Средняя оценка: {avg}/5 (всего {count})\n\n"
